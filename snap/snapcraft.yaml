@@ -1,0 +1,42 @@
+name: gephi
+title: Gephi
+base: core24
+version: 0.11.0-SNAPSHOT
+summary: The Open Graph Viz Platform
+description: |
+  **Gephi is the leading open-source platform for visualizing and manipulating large graphs.**
+  * **Fast** Powered by a built-in OpenGL engine, Gephi is able to push the envelope with very large networks. Visualize networks up to a million elements. All actions (e.g. layout, filter, drag) run in real-time.
+  * **Simple** Easy to install and get started. An UI that is centered around the visualization. Like Photoshop™ for graphs.
+  * **Extensible** Extend Gephi with plug-ins.
+
+  Example datasets can be found on our docs: https://docs.gephi.org/desktop/User_Manual/Datasets/
+
+  Localization is available in English, French, Spanish, Japanese, Russian, Brazilian Portuguese, Chinese, Czech, German, Romanian, Greek, Hungarian, Korean, Swedish and Ukrainian.
+
+license: GPL-3.0
+donation: https://opencollective.com/gephi/donate?interval=oneTime&amount=5&contributeAs=me&tags=snapcraft
+platforms:
+  amd64:
+  arm64:
+icon: snap/gui/gephi.png
+grade: devel # must be 'stable' to release into candidate/stable channels
+confinement: strict
+
+parts:
+  gephi:
+    stage-packages:
+      - libglu1-mesa
+    plugin: dump
+    source:
+      - on amd64: https://central.sonatype.com/repository/maven-snapshots/org/gephi/gephi/0.11.0-SNAPSHOT/gephi-0.11.0-20260315.161618-58-linux-x64.tar.gz
+      - on arm64: https://central.sonatype.com/repository/maven-snapshots/org/gephi/gephi/0.11.0-SNAPSHOT/gephi-0.11.0-20260315.163347-61-linux-aarch64.tar.gz
+    source-type: tar
+
+apps:
+  gephi:
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - opengl
+    command: bin/gephi

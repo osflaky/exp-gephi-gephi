@@ -1,0 +1,187 @@
+/*
+Copyright 2008-2010 Gephi
+Authors : Mathieu Bastian <mathieu.bastian@gephi.org>
+Website : http://www.gephi.org
+
+This file is part of Gephi.
+
+DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
+
+Copyright 2011 Gephi Consortium. All rights reserved.
+
+The contents of this file are subject to the terms of either the GNU
+General Public License Version 3 only ("GPL") or the Common
+Development and Distribution License("CDDL") (collectively, the
+"License"). You may not use this file except in compliance with the
+License. You can obtain a copy of the License at
+http://gephi.org/about/legal/license-notice/
+or /cddl-1.0.txt and /gpl-3.0.txt. See the License for the
+specific language governing permissions and limitations under the
+License.  When distributing the software, include this License Header
+Notice in each file and include the License files at
+/cddl-1.0.txt and /gpl-3.0.txt. If applicable, add the following below the
+License Header, with the fields enclosed by brackets [] replaced by
+your own identifying information:
+"Portions Copyrighted [year] [name of copyright owner]"
+
+If you wish your version of this file to be governed by only the CDDL
+or only the GPL Version 3, indicate your decision by adding
+"[Contributor] elects to include this software in this distribution
+under the [CDDL or GPL Version 3] license." If you do not indicate a
+single choice of license, a recipient has the option to distribute
+your version of this file under either the CDDL, the GPL Version 3 or
+to extend the choice of license to its licensees as provided above.
+However, if you add GPL Version 3 code and therefore, elected the GPL
+Version 3 license, then the option applies only if the new code is
+made subject to such option by the copyright holder.
+
+Contributor(s):
+
+Portions Copyrighted 2011 Gephi Consortium.
+*/
+
+package org.gephi.branding.desktop.reporter;
+
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.util.concurrent.Callable;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
+import javax.swing.JButton;
+import org.openide.DialogDisplayer;
+import org.openide.LifecycleManager;
+import org.openide.NotifyDescriptor;
+import org.openide.util.NbBundle;
+import org.openide.util.NbPreferences;
+
+/**
+ * @author Mathieu Bastian
+ */
+public class ReporterHandler extends java.util.logging.Handler implements Callable<JButton>, ActionListener {
+
+    private static final String PLATFORM_LOGGER_PREFIX = "org.netbeans.";
+    private static final String PROXY_AUTO_CONFIG_LOGGER = "org.netbeans.core.network.proxy.ProxyAutoConfig";
+
+    private Report currentReport;
+    private final ReportController reportController = new ReportController();
+    private final String MEMORY_ERROR;
+
+    public ReporterHandler() {
+        MEMORY_ERROR = NbBundle.getMessage(ReporterHandler.class, "OutOfMemoryError.message");
+    }
+
+    protected static String createMessage(Throwable thr) {
+        //ignore causes with empty stacktraces -> they are just annotations
+        while ((thr.getCause() != null) && (thr.getCause().getStackTrace().length != 0)) {
+            thr = thr.getCause();
+        }
+        String message = thr.toString();
+        if (message.startsWith("java.lang.")) {
+            message = message.substring(10);
+        }
+        int indexClassName = message.indexOf(':');
+        if (indexClassName == -1) { // there is no message after className
+            if (thr.getStackTrace().length != 0) {
+                StackTraceElement elem = thr.getStackTrace()[0];
+                return message + " at " + elem.getClassName() + "." + elem.getMethodName();
+            }
+        }
+        return message;
+    }
+
+    /**
+     * NetBeans Platform code reports problems it has already recovered from
+     * through java.util.logging below WARNING and then carries on with a
+     * fallback: an unreachable autoupdate catalog, an unreadable window-system
+     * config file, a cache file it could not delete. Those records are not
+     * crashes and must not become crash reports. A platform record at WARNING
+     * or above is still reported, because the platform does use WARNING for
+     * problems worth a maintainer's attention, such as a TopComponent whose
+     * settings file cannot be deserialized (PersistenceManager, line 591).
+     * ProxyAutoConfig is the one exception: it never logs above WARNING and
+     * every failure there ends with a working, possibly no-op, PAC evaluator.
+     */
+    static boolean isHandledPlatformDiagnostic(LogRecord record) {
+        String loggerName = record.getLoggerName();
+        if (loggerName == null || !loggerName.startsWith(PLATFORM_LOGGER_PREFIX)) {
+            return false;
+        }
+        int level = record.getLevel().intValue();
+        if (PROXY_AUTO_CONFIG_LOGGER.equals(loggerName)) {
+            return level <= Level.WARNING.intValue();
+        }
+        return level < Level.WARNING.intValue();
+    }
+
+    @Override
+    public void publish(LogRecord record) {
+        if (record.getThrown() == null) {
+            return;
+        }
+        Throwable throwable = record.getThrown();
+        if (throwable instanceof OutOfMemoryError) {
+            //Checked before the platform filter so an OutOfMemoryError still
+            //stops Gephi whichever logger it was reported through
+            notifyOutOfMemory();
+            return;
+        }
+        if (isHandledPlatformDiagnostic(record)) {
+            return;
+        }
+
+        Report report = new Report();
+        report.setThrowable(throwable);
+        report.setSummary(createMessage(throwable));
+
+        boolean autoSend = NbPreferences.forModule(ReportController.class)
+            .getBoolean(ReportController.SEND_CRASH_REPORTS, ReportController.DEFAULT_SEND_CRASH_REPORTS);
+        if (autoSend) {
+            // Populate system info and capture to Sentry immediately, before the user even
+            // opens the dialog. The panel will only be used to attach optional user feedback.
+            reportController.populateSystemInfo(report);
+            reportController.captureExceptionToSentry(report);
+        }
+
+        currentReport = report;
+    }
+
+    void notifyOutOfMemory() {
+        Handler[] handlers = Logger.getLogger("").getHandlers();
+        for (Handler h : handlers) {
+            h.close();
+        }
+        NotifyDescriptor nd = new NotifyDescriptor.Message(MEMORY_ERROR, NotifyDescriptor.ERROR_MESSAGE);
+        DialogDisplayer.getDefault().notify(nd);
+        LifecycleManager.getDefault().exit();
+    }
+
+    Report getCurrentReport() {
+        return currentReport;
+    }
+
+    @Override
+    public void flush() {
+    }
+
+    @Override
+    public void close() throws SecurityException {
+        currentReport = null;
+    }
+
+    @Override
+    public JButton call() throws Exception {
+        JButton btn = new JButton(NbBundle.getMessage(ReporterHandler.class, "ReportHandler.button"));
+        btn.addActionListener(this);
+        return btn;
+    }
+
+    @Override
+    public void actionPerformed(ActionEvent e) {
+        if (currentReport != null) {
+            ReportPanel panel = new ReportPanel(currentReport);
+            panel.showDialog();
+        }
+    }
+}
