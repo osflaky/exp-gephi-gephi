@@ -1,0 +1,291 @@
+/*
+ Copyright 2008-2010 Gephi
+ Authors : Jérémy Subtil <jeremy.subtil@gephi.org>, Mathieu Bastian
+ Website : http://www.gephi.org
+
+ This file is part of Gephi.
+
+ DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS HEADER.
+
+ Copyright 2011 Gephi Consortium. All rights reserved.
+
+ The contents of this file are subject to the terms of either the GNU
+ General Public License Version 3 only ("GPL") or the Common
+ Development and Distribution License("CDDL") (collectively, the
+ "License"). You may not use this file except in compliance with the
+ License. You can obtain a copy of the License at
+ http://gephi.org/about/legal/license-notice/
+ or /cddl-1.0.txt and /gpl-3.0.txt. See the License for the
+ specific language governing permissions and limitations under the
+ License.  When distributing the software, include this License Header
+ Notice in each file and include the License files at
+ /cddl-1.0.txt and /gpl-3.0.txt. If applicable, add the following below the
+ License Header, with the fields enclosed by brackets [] replaced by
+ your own identifying information:
+ "Portions Copyrighted [year] [name of copyright owner]"
+
+ If you wish your version of this file to be governed by only the CDDL
+ or only the GPL Version 3, indicate your decision by adding
+ "[Contributor] elects to include this software in this distribution
+ under the [CDDL or GPL Version 3] license." If you do not indicate a
+ single choice of license, a recipient has the option to distribute
+ your version of this file under either the CDDL, the GPL Version 3 or
+ to extend the choice of license to its licensees as provided above.
+ However, if you add GPL Version 3 code and therefore, elected the GPL
+ Version 3 license, then the option applies only if the new code is
+ made subject to such option by the copyright holder.
+
+ Contributor(s):
+
+ Portions Copyrighted 2011 Gephi Consortium.
+ */
+
+package org.gephi.desktop.preview;
+
+import java.awt.Font;
+import java.beans.PropertyChangeEvent;
+import java.beans.PropertyChangeListener;
+import java.beans.PropertyEditorManager;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import javax.swing.SwingUtilities;
+import org.gephi.desktop.preview.api.PreviewUIController;
+import org.gephi.desktop.preview.api.PreviewUIModel;
+import org.gephi.desktop.preview.propertyeditors.DependantColorPropertyEditor;
+import org.gephi.desktop.preview.propertyeditors.DependantOriginalColorPropertyEditor;
+import org.gephi.desktop.preview.propertyeditors.DisabledAwareFontEditor;
+import org.gephi.desktop.preview.propertyeditors.EdgeColorPropertyEditor;
+import org.gephi.preview.api.PreviewController;
+import org.gephi.preview.api.PreviewModel;
+import org.gephi.preview.api.PreviewPreset;
+import org.gephi.preview.api.PreviewProperty;
+import org.gephi.preview.presets.BlackBackground;
+import org.gephi.preview.presets.DefaultCurved;
+import org.gephi.preview.presets.DefaultPreset;
+import org.gephi.preview.presets.DefaultStraight;
+import org.gephi.preview.presets.EdgesCustomColor;
+import org.gephi.preview.presets.TagCloud;
+import org.gephi.preview.presets.TextOutline;
+import org.gephi.preview.types.DependantColor;
+import org.gephi.preview.types.DependantOriginalColor;
+import org.gephi.preview.types.EdgeColor;
+import org.gephi.project.api.ProjectController;
+import org.gephi.project.api.Workspace;
+import org.gephi.project.api.WorkspaceListener;
+import org.gephi.project.spi.Controller;
+import org.openide.util.Lookup;
+import org.openide.util.lookup.ServiceProvider;
+import org.openide.util.lookup.ServiceProviders;
+import org.openide.windows.WindowManager;
+
+/**
+ * Controller implementation of the preview UI.
+ *
+ * <p>Implements the {@link Controller} SPI so that a {@link PreviewUIModelImpl} is created in
+ * every workspace's lookup automatically by {@code WorkspaceImpl.initModels()}. This keeps the
+ * controller stateless and side-effect free at construction time, which avoids EDT stalls during
+ * lazy lookup of the singleton (see GEPHI-5KZ).
+ *
+ * @author Jérémy Subtil, Mathieu Bastian
+ */
+@ServiceProviders({
+    @ServiceProvider(service = PreviewUIController.class),
+    @ServiceProvider(service = Controller.class, position = 2000)})
+public class PreviewUIControllerImpl implements PreviewUIController, Controller<PreviewUIModelImpl> {
+
+    private final List<PropertyChangeListener> listeners = new ArrayList<>();
+    private final PresetUtils presetUtils = new PresetUtils();
+    private final PreviewController previewController;
+
+    public PreviewUIControllerImpl() {
+        previewController = Lookup.getDefault().lookup(PreviewController.class);
+
+        ProjectController pc = Lookup.getDefault().lookup(ProjectController.class);
+        pc.addWorkspaceListener(new WorkspaceListener() {
+            @Override
+            public void initialize(Workspace workspace) {
+                enableRefresh();
+            }
+
+            @Override
+            public void select(Workspace workspace) {
+                PreviewUIModelImpl model = getModel(workspace);
+                if (model != null) {
+                    PreviewModel previewModel = model.getPreviewModel();
+                    if (previewModel != null) {
+                        Float visibilityRatio =
+                            previewModel.getProperties().getFloatValue(PreviewProperty.VISIBILITY_RATIO);
+                        if (visibilityRatio != null) {
+                            model.setVisibilityRatio(visibilityRatio);
+                        }
+                    }
+                }
+                fireEvent(SELECT, model);
+            }
+
+            @Override
+            public void unselect(Workspace workspace) {
+                fireEvent(UNSELECT, getModel(workspace));
+            }
+
+            @Override
+            public void close(Workspace workspace) {
+            }
+
+            @Override
+            public void disable() {
+                fireEvent(SELECT, null);
+            }
+        });
+
+        //Register editors
+        //Overriding default Preview API basic editors that don't support CustomEditor
+        PropertyEditorManager.registerEditor(EdgeColor.class, EdgeColorPropertyEditor.class);
+        PropertyEditorManager.registerEditor(DependantOriginalColor.class, DependantOriginalColorPropertyEditor.class);
+        PropertyEditorManager.registerEditor(DependantColor.class, DependantColorPropertyEditor.class);
+
+        // Overriding Netbeans font editor to support disabled state, #3105
+        PropertyEditorManager.registerEditor(Font.class, DisabledAwareFontEditor.class);
+    }
+
+    @Override
+    public PreviewUIModelImpl newModel(Workspace workspace) {
+        return new PreviewUIModelImpl(workspace, this);
+    }
+
+    @Override
+    public Class<PreviewUIModelImpl> getModelClass() {
+        return PreviewUIModelImpl.class;
+    }
+
+    @Override
+    public PreviewUIModelImpl getModel() {
+        return Controller.super.getModel();
+    }
+
+    /**
+     * Refreshes the preview applet.
+     */
+    @Override
+    public void refreshPreview() {
+        final PreviewUIModelImpl model = getModel();
+        if (model != null) {
+            Thread refreshThread = new Thread(() -> {
+                model.setRefreshing(true);
+                fireEvent(REFRESHING, true);
+
+                previewController.getModel().getProperties()
+                    .putValue(PreviewProperty.VISIBILITY_RATIO, model.getVisibilityRatio());
+                previewController.refreshPreview();
+
+                fireEvent(REFRESHED, model);
+
+                model.setRefreshing(false);
+                fireEvent(REFRESHING, false);
+            }, "Refresh Preview");
+            refreshThread.start();
+        }
+    }
+
+    /**
+     * Enables the preview refresh action.
+     */
+    private void enableRefresh() {
+        SwingUtilities.invokeLater(() -> {
+            PreviewSettingsTopComponent pstc = (PreviewSettingsTopComponent) WindowManager.getDefault()
+                .findTopComponent("PreviewSettingsTopComponent");
+            if (pstc != null) {
+                pstc.enableRefreshButton();
+            }
+        });
+    }
+
+    @Override
+    public void setVisibilityRatio(float visibilityRatio) {
+        PreviewUIModelImpl model = getModel();
+        if (model != null) {
+            model.setVisibilityRatio(visibilityRatio);
+        }
+    }
+
+    @Override
+    public PreviewPreset[] getDefaultPresets() {
+        return new PreviewPreset[] {new DefaultPreset(), new DefaultCurved(), new DefaultStraight(), new TextOutline(),
+            new BlackBackground(), new EdgesCustomColor(), new TagCloud()};
+    }
+
+    @Override
+    public PreviewPreset[] getUserPresets() {
+        PreviewPreset[] presetsArray = presetUtils.getPresets();
+        Arrays.sort(presetsArray);
+        return presetsArray;
+    }
+
+    @Override
+    public void setCurrentPreset(PreviewPreset preset) {
+        PreviewUIModelImpl model = getModel();
+        if (model != null) {
+            model.setCurrentPreset(preset);
+            PreviewModel previewModel = previewController.getModel();
+            if (previewModel != null) {
+                previewModel.getProperties().applyPreset(preset);
+            }
+        }
+    }
+
+    @Override
+    public void addPreset(PreviewPreset preset) {
+        presetUtils.savePreset(preset);
+    }
+
+    @Override
+    public void removePreset(PreviewPreset preset) {
+        presetUtils.removePreset(preset);
+    }
+
+    @Override
+    public boolean hasPreset(String name) {
+        return presetUtils.hasPreset(name);
+    }
+
+    @Override
+    public void savePreset(String name) {
+        PreviewUIModelImpl model = getModel();
+        if (model != null) {
+            PreviewModel previewModel = previewController.getModel();
+            Map<String, Object> map = new HashMap<>();
+            for (PreviewProperty p : previewModel.getProperties().getProperties()) {
+                map.put(p.getName(), p.getValue());
+            }
+            for (Entry<String, Object> p : previewModel.getProperties().getSimpleValues()) {
+                map.put(p.getKey(), p.getValue());
+            }
+            PreviewPreset preset = new PreviewPreset(name, map);
+            presetUtils.savePreset(preset);
+            model.setCurrentPreset(preset);
+        }
+    }
+
+    @Override
+    public void addPropertyChangeListener(PropertyChangeListener listener) {
+        if (!listeners.contains(listener)) {
+            listeners.add(listener);
+        }
+    }
+
+    @Override
+    public void removePropertyChangeListener(PropertyChangeListener listener) {
+        listeners.remove(listener);
+    }
+
+    private void fireEvent(String eventName, Object data) {
+        PropertyChangeEvent event = new PropertyChangeEvent(this, eventName, null, data);
+        for (PropertyChangeListener l : listeners) {
+            l.propertyChange(event);
+        }
+    }
+}
